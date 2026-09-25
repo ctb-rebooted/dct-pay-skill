@@ -1,0 +1,14 @@
+{
+  "name": "dct-pay",
+  "version": "0.1.0",
+  "description": "dct-pay: attach payments (hosted /pay checkout, entitlements, app-scoped credits) and sponsor-slot monetisation (build credits, not cash) to a vibe-coded web app in one session. Two flows — /dct-pay pay and /dct-pay earn — backed by a zero-dependency CLI over pay.docenty.ai. Web apps only (Next.js, React, Vite, static HTML).",
+  "author": {
+    "name": "Docenty",
+    "url": "https://pay.docenty.ai"
+  },
+  "homepage": "https://pay.docenty.ai",
+  "repository": "https://github.com/ctb-rebooted/dct-pay-skill",
+  "license": "Evaluation use. (c) Docenty. Build credits are not cash.",
+  "keywords": ["dct-pay", "payments", "checkout", "monetization", "creator-economy", "sponsor-slot", "entitlements", "credits", "vibe-coding", "korea", "docenty"],
+  "skills": ["./"]
+}
