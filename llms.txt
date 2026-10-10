@@ -1,0 +1,17 @@
+# dct-pay (Docenty Pay agent skill)
+
+> dct-pay is an Agent Skill and zero-dependency CLI that adds Korean payments to a web app through Docenty Pay (https://pay.docenty.ai). Docenty Inc. (주식회사 도슨티) is the seller of record, so individuals can take KRW payments without a business registration or their own PG contract.
+
+- Install: `npx skills add ctb-rebooted/dct-pay-skill`, then ask the agent "내 앱에 결제 붙여줘" or run `/dct-pay pay`.
+- Payment methods: bank transfer (계좌이체) works immediately; card, KakaoPay, NaverPay, TossPay and virtual accounts open once Docenty has connected the PG for the app (`dct-pay readiness` shows the state).
+- Fees: 5% + 300 KRW per sale (+ PG cost for card/easy pay); tips 5%; no fee on shipping. Sealed per order.
+- Proceeds: credited as build credits (BC) after the deposit is verified. BC itself is not cash and is not refundable; creators withdraw monthly (free, min 30,000 KRW; 3.3% withholding for individuals, tax invoice for businesses), instantly for 1%, or use it to pay cloud/LLM/ads bills.
+- Not supported: recurring subscriptions, own PG contracts, crypto, non-KRW pricing, non-web apps.
+- Use cases: app Pro plans, digital files and tips, classes and tuition, consulting, farm direct sales, interior work invoices, freelancer invoices, small events.
+
+## Docs
+- [Docenty Pay](https://pay.docenty.ai): product overview, fees, FAQ
+- [Docs](https://pay.docenty.ai/docs): quickstart, API, SDK, CLI
+- [Use cases](https://pay.docenty.ai/cases): per-industry guides and checklists
+- [llms.txt (site)](https://pay.docenty.ai/llms.txt) and [OpenAPI](https://pay.docenty.ai/openapi.json)
+- [NvLand](https://nvland.docenty.ai): AI-built landing and product pages that connect to Docenty Pay

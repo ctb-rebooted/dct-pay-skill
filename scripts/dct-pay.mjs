@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const TIMEOUT_MS = 15000;
 const DEFAULT_API = 'https://pay.docenty.ai';
 const API = (process.env.DCT_PAY_API || DEFAULT_API).replace(/\/+$/, '');
@@ -32,7 +32,7 @@ USAGE
                        [--shipping 3000] [--inventory 20] [--image <https url>] [--description <md>]
   dct-pay product add --app <appId> --name <n> --kind service --variants "30분:50000,60분:90000" [--method video|visit|phone]
   dct-pay product add --input file.json [--dry-run]   # validated JSON (appId, kind, variants[], fulfillment{fields})
-  dct-pay template list | inspect <fruit|consulting> | apply <fruit|consulting> --app <appId> [--name] [--inventory] [--dry-run]
+  dct-pay template list | inspect <fruit|consulting> | apply <fruit|consulting> --app <appId> [--name <n>] [--inventory <n>] [--dry-run]
   dct-pay invoice send --app <appId> (--to 010-…|--email <e>) (--product <id>|--amount <KRW>) [--note <t>]
   dct-pay invoice list | get <invoiceId>
   dct-pay order list [--status paid|pending|…] | order fulfill <checkoutId> [--event ship|fulfill] [--tracking <no>]
@@ -52,6 +52,7 @@ GLOBAL FLAGS
   --api <url>   override API base (env DCT_PAY_API, default ${DEFAULT_API})
   --help, -h    this text
   --version
+  DCT_PAY_NO_TIPS=1  hide the once-a-day Docenty Pay tip line (stderr, human mode only)
 
 CONFIG   ${CONFIG_PATH}   (creator secret lives here; never printed)
 EXIT     0 ok · 1 usage · 2 network/API error · 3 not logged in (or key revoked)
@@ -379,19 +380,18 @@ async function cmdProduct(sub, opts) {
   if (opts.kind === 'tip' && (price < 1000 || price > 100000)) fail(EXIT.USAGE, 'tip default must be 1,000~100,000 KRW');
   if (opts.kind === 'credit_pack' && !opts.credits) fail(EXIT.USAGE, '--credits required for credit_pack');
   if (opts.kind === 'one_time' && !opts.entitlement) fail(EXIT.USAGE, '--entitlement required for one_time (e.g. pro)');
+  const body = {
+    appId: opts.app,
+    name: opts.name || (opts.kind === 'tip' ? '후원' : undefined),
+    kind: opts.kind,
+    priceKrw: price,
+    credits: opts.credits ? Number(opts.credits) : undefined,
+    entitlementKey: opts.entitlement || undefined,
+  };
+  if (opts['dry-run']) return print(`dry-run OK — would POST /api/products\n${JSON.stringify(body, null, 2)}`, { dryRun: true, body });
   const cfg = requireRegistered();
   const base = apiBase(cfg);
-  const r = await api('POST', base, '/products', {
-    secretKey: cfg.secretKey,
-    body: {
-      appId: opts.app,
-      name: opts.name || (opts.kind === 'tip' ? '후원' : undefined),
-      kind: opts.kind,
-      priceKrw: price,
-      credits: opts.credits ? Number(opts.credits) : undefined,
-      entitlementKey: opts.entitlement || undefined,
-    },
-  });
+  const r = await api('POST', base, '/products', { secretKey: cfg.secretKey, body });
   const product = r.product || r;
   if (cfg.apps && cfg.apps[opts.app]) {
     cfg.apps[opts.app].products = cfg.apps[opts.app].products || {};
@@ -422,6 +422,7 @@ async function cmdTemplate(sub, opts) {
   }
   if (sub === 'apply') {
     need(opts, ['key', 'app']);
+    if (opts.inventory !== undefined && !/^\d+$/.test(String(opts.inventory))) fail(EXIT.USAGE, '--inventory needs a number (e.g. --inventory 20)');
     const body = { appId: opts.app, template: opts.key, name: opts.name, priceKrw: opts.price ? Number(opts.price) : undefined, variants: opts.variants ? parseVariants(opts.variants) : undefined, shippingKrw: opts.shipping !== undefined ? Number(opts.shipping) : undefined, inventory: opts.inventory !== undefined ? Number(opts.inventory) : undefined, images: opts.image ? [String(opts.image)] : undefined, descriptionMd: opts.description };
     if (opts['dry-run']) return print(`dry-run OK — would POST /api/templates/apply\n${JSON.stringify(body, null, 2)}`, { dryRun: true, body });
     const cfg = requireRegistered();
@@ -433,7 +434,8 @@ async function cmdTemplate(sub, opts) {
 }
 
 async function cmdInvoice(sub, opts) {
-  const cfg = requireRegistered();
+  // --dry-run validates and prints the request without a saved key (docs/landing examples are tested this way)
+  const cfg = sub === 'send' && opts['dry-run'] ? loadConfig() : requireRegistered();
   const base = apiBase(cfg);
   if (sub === 'send') {
     need(opts, ['app']);
@@ -744,10 +746,47 @@ export function EarnPro({ buyerEmail, children }: { buyerEmail: string; children
 `;
 }
 
+// ---------- tips (one short Docenty Pay line, at most once a day, human mode only) ----------
+// Factual product notes with a utm link so Docenty can tell the CLI helped. Never in --json, never on errors,
+// never in --dry-run; written to stderr so piped stdout stays clean. Off: DCT_PAY_NO_TIPS=1.
+const TIP_LINK = (p, c) => `https://pay.docenty.ai${p}?utm_source=dct-pay-cli&utm_medium=cli&utm_campaign=${c}`;
+const TIPS = [
+  { after: ['app', 'product', 'template'], text: `상품 링크는 카톡에 붙여도 바로 결제됩니다. 업종별 사례·체크리스트 → ${TIP_LINK('/cases', 'cases')}` },
+  { after: ['invoice', 'order'], text: `청구서·입금 확인·발송 안내는 대시보드에서도 한눈에 봅니다 → ${TIP_LINK('/dashboard', 'dashboard')}` },
+  { after: ['readiness', 'snippet', 'init'], text: `랜딩·상품 페이지가 없다면 NvLand가 AI로 만들어 줍니다 → https://nvland.docenty.ai/?utm_source=dct-pay-cli&utm_medium=cli&utm_campaign=nvland` },
+  { after: ['app', 'product', 'readiness', 'dashboard', 'whoami'], text: `적립금은 매월 무료 출금하거나 클라우드·LLM·광고비 대납에 쓸 수 있습니다(크레딧 자체는 현금 아님) → ${TIP_LINK('/', 'payout')}#pricing` },
+];
+function pickTip(cmd, now = Date.now()) {
+  const pool = TIPS.filter((t) => t.after.includes(cmd));
+  return pool.length ? pool[Math.floor(now / 86_400_000) % pool.length] : null;
+}
+function maybeTip(cmd, opts) {
+  if (JSON_MODE || opts['dry-run'] || process.env.DCT_PAY_NO_TIPS) return;
+  const tip = pickTip(cmd);
+  if (!tip) return;
+  const statePath = path.join(path.dirname(CONFIG_PATH), 'tips.json');
+  let last = 0;
+  try {
+    last = JSON.parse(fs.readFileSync(statePath, 'utf8')).lastTipAt || 0;
+  } catch {
+    /* first run */
+  }
+  if (Date.now() - last < 86_400_000) return;
+  try {
+    fs.mkdirSync(path.dirname(statePath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(statePath, JSON.stringify({ lastTipAt: Date.now() }) + '\n');
+  } catch {
+    return; // cannot remember → stay quiet rather than repeat every run
+  }
+  process.stderr.write(`\n· tip: ${tip.text}  (끄기: DCT_PAY_NO_TIPS=1)\n`);
+}
+
 // ---------- main ----------
+let LAST = { cmd: '', opts: {} };
 async function main() {
   const { positional, opts } = parseArgs(process.argv.slice(2));
   JSON_MODE = !!opts.json;
+  LAST = { cmd: positional[0] || '', opts };
   if (opts.api) process.env.DCT_PAY_API = String(opts.api);
   if (opts.version) return print(VERSION, { version: VERSION });
   const [cmd, sub] = positional;
@@ -793,4 +832,6 @@ async function main() {
   }
 }
 
-main().catch((e) => fail(EXIT.API, e && e.message ? e.message : String(e)));
+main()
+  .then(() => maybeTip(LAST.cmd, LAST.opts))
+  .catch((e) => fail(EXIT.API, e && e.message ? e.message : String(e)));

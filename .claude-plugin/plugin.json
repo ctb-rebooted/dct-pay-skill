@@ -1,14 +1,37 @@
 {
   "name": "dct-pay",
-  "version": "0.1.0",
-  "description": "dct-pay: attach payments (hosted /pay checkout, entitlements, app-scoped credits) and sponsor-slot monetisation (build credits, not cash) to a vibe-coded web app in one session. Two flows — /dct-pay pay and /dct-pay earn — backed by a zero-dependency CLI over pay.docenty.ai. Web apps only (Next.js, React, Vite, static HTML).",
+  "version": "1.2.0",
+  "description": "dct-pay — 사업자 없이 결제 받기 (Docenty Pay). Add Korean payments to a vibe-coded web app without a business registration or PG contract. Docenty Pay (pay.docenty.ai) is the seller of record: hosted /pay checkout (bank transfer now; card, KakaoPay, NaverPay, TossPay and virtual accounts once the PG is connected), product pages, AlimTalk invoices, deposit checks, creator dashboard and monthly payouts. Zero-dependency CLI; web apps only (Next.js, React, Vite, static HTML).",
   "author": {
-    "name": "Docenty",
-    "url": "https://pay.docenty.ai"
+    "name": "Docenty (주식회사 도슨티)",
+    "url": "https://docenty.ai"
   },
-  "homepage": "https://pay.docenty.ai",
+  "homepage": "https://pay.docenty.ai/?utm_source=claude-plugin&utm_medium=referral&utm_campaign=dct-pay-skill",
   "repository": "https://github.com/ctb-rebooted/dct-pay-skill",
-  "license": "Evaluation use. (c) Docenty. Build credits are not cash.",
-  "keywords": ["dct-pay", "payments", "checkout", "monetization", "creator-economy", "sponsor-slot", "entitlements", "credits", "vibe-coding", "korea", "docenty"],
-  "skills": ["./"]
+  "license": "Evaluation use. (c) Docenty Inc. Build credits are not cash and are not refundable.",
+  "keywords": [
+    "dct-pay",
+    "docenty",
+    "docenty-pay",
+    "payments",
+    "checkout",
+    "korea",
+    "korean-payments",
+    "kakaopay",
+    "naverpay",
+    "tosspay",
+    "merchant-of-record",
+    "lemon-squeezy-alternative",
+    "stripe-alternative",
+    "vibe-coding",
+    "agent-skill",
+    "claude-code",
+    "결제",
+    "사업자없이결제",
+    "결제링크",
+    "알림톡"
+  ],
+  "skills": [
+    "./"
+  ]
 }

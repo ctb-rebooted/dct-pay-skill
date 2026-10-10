@@ -119,3 +119,44 @@ test('--help lists v1.1 commands', () => {
 function require_fs() {
   return fsMod;
 }
+
+// Every CLI command printed on the landing and case pages must run (validated with --dry-run, no network).
+const platformSrc = join(dirname(fileURLToPath(import.meta.url)), '../../../apps/platform/src');
+test('landing & case-page dct-pay commands are valid (dry-run)', { skip: !fsMod.existsSync(platformSrc) && 'public mirror: platform sources not present' }, () => {
+  const root = platformSrc;
+  const cmds = [];
+  const page = fsMod.readFileSync(join(root, 'app/page.tsx'), 'utf8');
+  for (const m of page.matchAll(/<pre>\{`([^`]*)`\}<\/pre>/g)) cmds.push(...m[1].split('\\n'));
+  for (const f of ['components/landing/case-intents.ts', 'components/landing/cases.tsx']) {
+    const src = fsMod.readFileSync(join(root, f), 'utf8');
+    for (const m of src.matchAll(/code: "((?:\\.|[^"\\])*)"/g)) cmds.push(...JSON.parse(`"${m[1]}"`).split('\n'));
+  }
+  const runnable = cmds.map((c) => c.trim()).filter((c) => /^dct-pay (product add|template apply|invoice send)\b/.test(c));
+  assert.ok(runnable.length >= 15, `found ${runnable.length} commands`);
+  const words = (c) => [...c.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+  for (const c of runnable) {
+    const args = words(c).slice(1).map((w) => w.replace(/^<appId>$/, 'app_1').replace(/^<[^>]+>$/, 'p_1'));
+    const r = run(...args, '--dry-run', '--json');
+    assert.equal(r.status, 0, `${c}\n${r.stderr}${r.stdout}`);
+    assert.equal(JSON.parse(r.stdout).dryRun, true, c);
+  }
+});
+
+test('template apply: a bare --inventory is refused instead of silently meaning 1', () => {
+  const r = run('template', 'apply', 'fruit', '--app', 'app_1', '--inventory', '--dry-run');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr + r.stdout, /--inventory needs a number/);
+});
+
+test('tip: one short stderr line at most once a day, never with --json or DCT_PAY_NO_TIPS', () => {
+  const env = { ...process.env, DCT_EARN_CONFIG: join(mkdtempSync(join(tmpdir(), 'dct-pay-tip-')), 'config.json'), DCT_PAY_API: 'http://127.0.0.1:9' };
+  delete env.DCT_PAY_NO_TIPS;
+  const go = (extra = [], e = env) => spawnSync(process.execPath, [cli, 'snippet', '--key', 'dce_pk_test1', '--app', 'app_1', '--kind', 'script', ...extra], { encoding: 'utf8', env: e });
+  assert.equal(go(['--json']).stderr, '');
+  assert.equal(go([], { ...env, DCT_PAY_NO_TIPS: '1' }).stderr, '');
+  const first = go();
+  assert.equal(first.status, 0);
+  assert.match(first.stderr, /tip: .*utm_source=dct-pay-cli/);
+  assert.doesNotMatch(first.stdout, /tip:/); // stdout stays clean for pipes
+  assert.equal(go().stderr, ''); // same day → quiet
+});
