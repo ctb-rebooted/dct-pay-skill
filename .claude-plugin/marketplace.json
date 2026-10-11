@@ -7,14 +7,14 @@
   },
   "metadata": {
     "description": "Docenty Pay agent skill — 사업자 없이 내 앱·상품에 결제 붙이기 (pay.docenty.ai).",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "plugins": [
     {
       "name": "dct-pay",
       "source": "./",
       "description": "Add Korean payments to a vibe-coded web app without a business registration or PG contract. Docenty Pay (pay.docenty.ai) is the seller of record: hosted /pay checkout (bank transfer now; card, KakaoPay, NaverPay, TossPay and virtual accounts once the PG is connected), product pages, AlimTalk invoices, deposit checks, creator dashboard and monthly payouts. Zero-dependency CLI; web apps only (Next.js, React, Vite, static HTML).",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "category": "finance",
       "keywords": [
         "dct-pay",

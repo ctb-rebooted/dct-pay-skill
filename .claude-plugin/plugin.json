@@ -1,6 +1,6 @@
 {
   "name": "dct-pay",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "dct-pay — 사업자 없이 결제 받기 (Docenty Pay). Add Korean payments to a vibe-coded web app without a business registration or PG contract. Docenty Pay (pay.docenty.ai) is the seller of record: hosted /pay checkout (bank transfer now; card, KakaoPay, NaverPay, TossPay and virtual accounts once the PG is connected), product pages, AlimTalk invoices, deposit checks, creator dashboard and monthly payouts. Zero-dependency CLI; web apps only (Next.js, React, Vite, static HTML).",
   "author": {
     "name": "Docenty (주식회사 도슨티)",

@@ -3,18 +3,19 @@
  * dct-pay CLI — zero-dependency wrapper over the dct-pay HTTP API (sp_001 §3).
  * Node >= 18 (global fetch). Config: ~/.dct-pay/config.json (chmod 600).
  *
- * Exit codes: 0 ok · 1 usage · 2 network/API error (server message printed) · 3 not registered
+ * Exit codes: 0 ok · 1 usage · 2 network/API error (server message printed) · 3 not registered · 4 ai-block check failed
  */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const TIMEOUT_MS = 15000;
 const DEFAULT_API = 'https://pay.docenty.ai';
 const API = (process.env.DCT_PAY_API || DEFAULT_API).replace(/\/+$/, '');
 const CONFIG_PATH = process.env.DCT_EARN_CONFIG || path.join(os.homedir(), '.dct-pay', 'config.json');
-const EXIT = { OK: 0, USAGE: 1, API: 2, NOT_REGISTERED: 3 };
+const EXIT = { OK: 0, USAGE: 1, API: 2, NOT_REGISTERED: 3, CHECK: 4 };
 
 const HELP = `dct-pay ${VERSION} — attach payments / sponsor slots to a web app via pay.docenty.ai
 
@@ -44,6 +45,12 @@ USAGE
                      [--product <productId>] [--slot <slotCode>] [--framework static|react|next|vite]
                      [--kind product-card --product <productId> --handle <h>]   # 상품 카드 (상품 상세 링크)
                      [--key <dce_pk_…>]        # render without config/network
+  dct-pay ai-block add    --app <appId> [--categories a,b] [--env-path .env.local | --vercel] [--rotate]
+                          # AI 노출 협찬 블록 (ad4ai): writes DOCENTY_SITE_KEY + DOCENTY_SDK_SECRET, secret never printed
+  dct-pay ai-block status --app <appId>      # review status, live placements, last verification, AI crawler visits
+  dct-pay ai-block snippet --framework <next-app|next-pages|astro|sveltekit|remix|nuxt|express|vite|static|cloudflare|vercel-edge|netlify-edge> [--site-url <url>]
+  dct-pay ai-block install [--dir <app root>] [--no-npm]   # vendor/agent-ads-<version>.tgz from the hub, then npm i
+  dct-pay ai-block check  --url <deployed url>   # block in the initial HTML for an AI crawler? (exit 4 if not)
   dct-pay dashboard | open
   dct-pay whoami                              # verifies the saved key against the API
 
@@ -52,10 +59,11 @@ GLOBAL FLAGS
   --api <url>   override API base (env DCT_PAY_API, default ${DEFAULT_API})
   --help, -h    this text
   --version
+  AD4AI_HUB_BASE  ad4ai hub for the SDK tarball URL (default https://ad4ai.docenty.ai/l/answers)
   DCT_PAY_NO_TIPS=1  hide the once-a-day Docenty Pay tip line (stderr, human mode only)
 
 CONFIG   ${CONFIG_PATH}   (creator secret lives here; never printed)
-EXIT     0 ok · 1 usage · 2 network/API error · 3 not logged in (or key revoked)
+EXIT     0 ok · 1 usage · 2 network/API error · 3 not logged in (or key revoked) · 4 ai-block check: no valid block
 `;
 
 // ---------- args ----------
@@ -746,6 +754,546 @@ export function EarnPro({ buyerEmail, children }: { buyerEmail: string; children
 `;
 }
 
+// ---------- ai-block: ad4ai AI-visible sponsored blocks (server/build/edge HTML, never JS-only) ----------
+// add/status go through pay.docenty.ai (Bearer dce_sk_); earn provisions the ad4ai media server-to-server.
+// The media SDK secret is written straight into the env target and NEVER printed (not in --json either).
+const AD4AI_HUB_BASE = () => (process.env.AD4AI_HUB_BASE || 'https://ad4ai.docenty.ai/l/answers').replace(/\/+$/, '');
+const SDK_TGZ = () => `${AD4AI_HUB_BASE()}/sdk/agent-ads-latest.tgz`;
+// Install = vendored, versioned tarball: lockfiles keep a stable integrity and deploy builds need no network to the hub.
+const SDK_INSTALL_CMD = 'node <dct-pay skill>/scripts/dct-pay.mjs ai-block install   # → vendor/agent-ads-<version>.tgz + npm i';
+const SPONSOR_LABEL = '협찬 · 광고';
+const AI_FRAMEWORKS = ['next-app', 'next-pages', 'astro', 'sveltekit', 'remix', 'nuxt', 'express', 'vite', 'static', 'cloudflare', 'vercel-edge', 'netlify-edge'];
+const ENV_VALUE = /^[A-Za-z0-9_.:+/=-]{1,512}$/;
+
+function gitRun(args, cwd) {
+  return spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+/** Make sure the env file can never be committed: refuse a tracked file, add it to .gitignore when not ignored. */
+function ensureEnvFileSafe(abs) {
+  const dir = path.dirname(abs);
+  fs.mkdirSync(dir, { recursive: true });
+  const tracked = gitRun(['ls-files', '--error-unmatch', abs], dir);
+  if (tracked.status === 0) fail(EXIT.USAGE, `${path.relative(process.cwd(), abs) || abs} is tracked by git — refusing to write a secret into it`, { fix: `use --env-path .env.local (or run: git rm --cached ${path.basename(abs)})` });
+  const ig = gitRun(['check-ignore', '-q', abs], dir);
+  if (ig.status === 0) return { gitignored: true, addedToGitignore: false };
+  const gi = path.join(dir, '.gitignore');
+  const name = path.basename(abs);
+  let cur = '';
+  try {
+    cur = fs.readFileSync(gi, 'utf8');
+  } catch {
+    /* none yet */
+  }
+  const has = cur.split(/\r?\n/).some((l) => l.trim() === name || l.trim() === '/' + name);
+  if (!has) fs.writeFileSync(gi, `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${name}\n`);
+  if (ig.status === 1 && gitRun(['check-ignore', '-q', abs], dir).status !== 0) {
+    fail(EXIT.USAGE, `${name} is still not ignored by git (a negation rule?) — refusing to write a secret into it`, { fix: 'fix .gitignore so the env file is ignored, then re-run' });
+  }
+  return { gitignored: true, addedToGitignore: !has };
+}
+function upsertEnvFile(abs, pairs) {
+  let text = '';
+  try {
+    text = fs.readFileSync(abs, 'utf8');
+  } catch {
+    /* new file */
+  }
+  const lines = text ? text.split('\n') : [];
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  for (const [k, v] of Object.entries(pairs)) {
+    const i = lines.findIndex((l) => new RegExp(`^\\s*(export\\s+)?${k}\\s*=`).test(l));
+    if (i >= 0) lines[i] = `${k}=${v}`;
+    else lines.push(`${k}=${v}`);
+  }
+  fs.writeFileSync(abs, lines.join('\n') + '\n', { mode: 0o600 });
+  try {
+    fs.chmodSync(abs, 0o600);
+  } catch {
+    /* best effort (Windows) */
+  }
+}
+const VERCEL_BIN = () => process.env.DCT_PAY_VERCEL_BIN || 'vercel';
+function vercelSpawn(args, input) {
+  return spawnSync(VERCEL_BIN(), args, { input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+}
+/** value goes through stdin only — never argv, never echoed */
+function vercelEnvAdd(name, value) {
+  const scrub = (s) => String(s || '').split(value).join('***').trim().split('\n').slice(-2).join(' ');
+  let r = vercelSpawn(['env', 'add', name, 'production'], value);
+  if (r.status !== 0 && /already exists/i.test(`${r.stderr}${r.stdout}`)) r = vercelSpawn(['env', 'add', name, 'production', '--force'], value);
+  if (r.error || r.status !== 0) {
+    return { ok: false, message: r.error ? r.error.code || 'spawn failed' : scrub(r.stderr || r.stdout) };
+  }
+  return { ok: true };
+}
+
+async function cmdAiBlock(sub, opts) {
+  switch (sub) {
+    case 'add':
+      return aiBlockAdd(opts);
+    case 'status':
+      return aiBlockStatus(opts);
+    case 'snippet':
+      return aiBlockSnippet(opts);
+    case 'check':
+      return aiBlockCheck(opts);
+    case 'install':
+      return aiBlockInstall(opts);
+    default:
+      fail(EXIT.USAGE, `unknown: ai-block ${sub || ''} (add|status|snippet|check|install)\n\n${HELP}`);
+  }
+}
+
+/** Download the current SDK tarball into vendor/ (versioned name from {hub}/sdk/latest.json) and install it from the file. */
+async function aiBlockInstall(opts) {
+  const dir = path.resolve(opts.dir || process.cwd());
+  if (!fs.existsSync(path.join(dir, 'package.json'))) fail(EXIT.USAGE, `no package.json in ${dir}`, { fix: 'run in the app root or pass --dir <app root>' });
+  const base = AD4AI_HUB_BASE();
+  const metaRes = await fetch(`${base}/sdk/latest.json`, { signal: AbortSignal.timeout(15000) }).catch((e) => fail(EXIT.API, `cannot reach ${base}/sdk/latest.json — ${e.message}`));
+  if (!metaRes.ok) fail(EXIT.API, `${base}/sdk/latest.json → HTTP ${metaRes.status}`);
+  const meta = await metaRes.json();
+  const version = String(meta.version || '');
+  if (!/^\d+\.\d+\.\d+$/.test(version)) fail(EXIT.API, 'latest.json has no valid version');
+  const name = `agent-ads-${version}.tgz`;
+  const res = await fetch(`${base}/sdk/${name}`, { signal: AbortSignal.timeout(30000) }).catch((e) => fail(EXIT.API, `download failed — ${e.message}`));
+  if (!res.ok) fail(EXIT.API, `${base}/sdk/${name} → HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 100 || buf[0] !== 0x1f || buf[1] !== 0x8b) fail(EXIT.API, `${name} is not a gzip tarball`);
+  const vendor = path.join(dir, 'vendor');
+  fs.mkdirSync(vendor, { recursive: true });
+  const file = path.join(vendor, name);
+  fs.writeFileSync(file, buf);
+  const rel = `./vendor/${name}`;
+  if (opts['no-npm']) return print(`saved ${rel} (${buf.length} bytes) — install with: npm i ${rel}`, { version, file: rel, installed: false });
+  const pm = fs.existsSync(path.join(dir, 'pnpm-lock.yaml')) ? 'pnpm' : fs.existsSync(path.join(dir, 'yarn.lock')) ? 'yarn' : 'npm';
+  const args = pm === 'npm' ? ['i', rel] : ['add', rel];
+  const r = spawnSync(process.env.DCT_PAY_NPM_BIN || pm, args, { cwd: dir, stdio: 'inherit' });
+  if (r.status !== 0) fail(EXIT.API, `${pm} ${args.join(' ')} failed (exit ${r.status})`, { fix: `run it yourself in ${dir}` });
+  print(`installed @docenty/agent-ads ${version} from ${rel} — commit vendor/${name} with the app so deploy builds install it offline`, { version, file: rel, installed: true, packageManager: pm });
+}
+
+async function aiBlockAdd(opts) {
+  need(opts, ['app']);
+  // --env-path is the documented flag: Node >= 20 swallows `--env-file` as its own option even after the script name.
+  // --env-file stays as an alias for invocations where Node does not intercept it (e.g. a wrapper binary).
+  if (opts['env-path'] !== undefined) opts['env-file'] = opts['env-path'];
+  if (opts.vercel && opts['env-file']) fail(EXIT.USAGE, 'use either --env-path or --vercel, not both');
+  if (opts['env-file'] === true) fail(EXIT.USAGE, '--env-path needs a path (e.g. --env-path .env.local)');
+  let categories;
+  if (opts.categories !== undefined) {
+    if (opts.categories === true) fail(EXIT.USAGE, '--categories needs a value (e.g. --categories "사진 편집,도구")');
+    categories = String(opts.categories).split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  // pre-flight the env target BEFORE asking for a secret (ad4ai hands it out once)
+  let target;
+  if (opts.vercel) {
+    const v = vercelSpawn(['--version'], '');
+    if (v.error || v.status !== 0) fail(EXIT.USAGE, 'vercel CLI not available (needed for --vercel)', { fix: 'npm i -g vercel && vercel link, or use --env-path .env.local' });
+    target = { kind: 'vercel', environment: 'production' };
+  } else {
+    const abs = path.resolve(String(opts['env-file'] || '.env.local'));
+    target = { kind: 'env-file', path: abs, ...ensureEnvFileSafe(abs) };
+  }
+  const cfg = requireRegistered();
+  const base = apiBase(cfg);
+  const body = { ...(categories ? { categories } : {}), ...(opts.rotate ? { rotate: true } : {}) };
+  const r = await api('POST', base, `/apps/${encodeURIComponent(opts.app)}/ai-blocks`, { secretKey: cfg.secretKey, body });
+  const values = { DOCENTY_SITE_KEY: r.siteKey };
+  if (r.secret) values.DOCENTY_SDK_SECRET = r.secret;
+  for (const [k, v] of Object.entries(values)) if (typeof v !== 'string' || !ENV_VALUE.test(v)) fail(EXIT.API, `unexpected ${k} format from the API (not written)`, { fix: 're-run with --rotate later; report this to Docenty' });
+  const wrote = [];
+  if (target.kind === 'vercel') {
+    for (const [k, v] of Object.entries(values)) {
+      const w = vercelEnvAdd(k, v);
+      if (!w.ok) fail(EXIT.API, `vercel env add ${k} production failed: ${w.message}`, { fix: `fix the Vercel link, then: dct-pay ai-block add --app ${opts.app} --vercel${r.secret ? ' --rotate (the old secret was not saved)' : ''}` });
+      wrote.push(k);
+    }
+  } else {
+    upsertEnvFile(target.path, values);
+    wrote.push(...Object.keys(values));
+  }
+  const where = target.kind === 'vercel' ? 'Vercel env (production)' : `${path.relative(process.cwd(), target.path) || target.path} (mode 600, gitignored${target.addedToGitignore ? ' — added to .gitignore' : ''})`;
+  const review = r.status === 'approved' ? 'approved — 블록이 노출됩니다' : r.status === 'pending_review' ? 'pending_review — 운영자 검토 후 블록이 나옵니다' : `${r.status} — 블록이 나오지 않습니다 (dct-pay ai-block status 로 확인)`;
+  const noSecret = r.secret ? '' : `\n  DOCENTY_SDK_SECRET was issued earlier and is kept as is (not shown again). Lost it? re-run with --rotate (the old one stops working).`;
+  print(
+    `ai-block linked — app ${opts.app}\n  media: ${r.mediaId} · status: ${review}\n  wrote ${wrote.join(', ')} → ${where}${noSecret}\n  next: dct-pay ai-block snippet --framework <${AI_FRAMEWORKS.join('|')}>`,
+    { status: r.status, siteKey: r.siteKey, mediaId: r.mediaId, hubBase: r.hubBase, secretIssued: !!r.secret, wrote, target: target.kind === 'vercel' ? target : { kind: 'env-file', path: target.path, gitignored: true, addedToGitignore: target.addedToGitignore } },
+  );
+}
+
+async function aiBlockStatus(opts) {
+  need(opts, ['app']);
+  const cfg = requireRegistered();
+  const r = await api('GET', apiBase(cfg), `/apps/${encodeURIComponent(opts.app)}/ai-blocks`, { secretKey: cfg.secretKey });
+  const review = r.status === 'pending_review' ? 'pending_review (운영자 검토 후 블록이 나옵니다)' : r.status;
+  print(
+    `ai-block status — app ${opts.app}\n  review: ${review}\n  live placements: ${r.placements ?? 0}\n  last verification: ${r.lastVerifiedAt || '—'}${r.lastVerdict ? ` (${r.lastVerdict})` : ''}\n  AI crawler visits (30d): ${r.crawlerVisits30d ?? 0}`,
+    r,
+  );
+}
+
+function aiSnippetFor(framework, siteUrl) {
+  const site = siteUrl || 'https://your-site.example';
+  const install = SDK_INSTALL_CMD;
+  const env = 'DOCENTY_SITE_KEY / DOCENTY_SDK_SECRET (server env only — written by `dct-pay ai-block add`)';
+  const marker = '<div data-docenty-slot></div>';
+  const ssrCfg = `{ siteKey: process.env.DOCENTY_SITE_KEY, secret: process.env.DOCENTY_SDK_SECRET }`;
+  const S = {
+    'next-app': {
+      method: 'ssr',
+      files: [
+        {
+          path: 'app/<page>/page.tsx (server component)',
+          content: `import { headers } from "next/headers";
+import { AgentAdsBlock } from "@docenty/agent-ads/next";
+
+export default async function Page() {
+  const h = await headers();
+  return (
+    <main>
+      {/* … page content … */}
+      <AgentAdsBlock
+        siteKey={process.env.DOCENTY_SITE_KEY!}
+        secret={process.env.DOCENTY_SDK_SECRET!}
+        pageUrl="${site}/<page>"
+        userAgent={h.get("user-agent")}
+      />
+    </main>
+  );
+}`,
+        },
+      ],
+    },
+    'next-pages': {
+      method: 'ssr',
+      files: [
+        {
+          path: 'pages/<page>.tsx',
+          content: `import type { GetServerSideProps } from "next";
+import { createAgentAds } from "@docenty/agent-ads";
+
+const ads = createAgentAds(${ssrCfg.replace('process.env.DOCENTY_SITE_KEY', 'process.env.DOCENTY_SITE_KEY!').replace('process.env.DOCENTY_SDK_SECRET', 'process.env.DOCENTY_SDK_SECRET!')});
+
+export const getServerSideProps: GetServerSideProps = async ({ req, resolvedUrl }) => {
+  ads.observe(req.headers["user-agent"]);
+  return { props: { adsHtml: await ads.renderHtml("${site}" + resolvedUrl) } };
+};
+
+export default function Page({ adsHtml }: { adsHtml: string }) {
+  return (
+    <main>
+      {/* … page content … */}
+      <div data-docenty-sdk="1" dangerouslySetInnerHTML={{ __html: adsHtml }} />
+    </main>
+  );
+}`,
+        },
+      ],
+    },
+    astro: {
+      method: 'ssr',
+      files: [
+        {
+          path: 'src/pages/<page>.astro',
+          content: `---
+import { createAgentAds } from "@docenty/agent-ads";
+const ads = createAgentAds({ siteKey: import.meta.env.DOCENTY_SITE_KEY, secret: import.meta.env.DOCENTY_SDK_SECRET });
+const adsHtml = await ads.renderHtml(new URL(Astro.url.pathname, "${site}").href);
+---
+<main>
+  <!-- … page content … -->
+  <div data-docenty-sdk="1" set:html={adsHtml} />
+</main>`,
+        },
+      ],
+      note: 'Works for SSR and prerendered pages (prerendered: the block is fixed at build time — rebuild to refresh).',
+    },
+    sveltekit: {
+      method: 'ssr',
+      files: [
+        {
+          path: 'src/routes/<page>/+page.server.ts',
+          content: `import { env } from "$env/dynamic/private";
+import { createAgentAds } from "@docenty/agent-ads";
+
+const ads = createAgentAds({ siteKey: env.DOCENTY_SITE_KEY!, secret: env.DOCENTY_SDK_SECRET! });
+
+export async function load({ url, request }) {
+  ads.observe(request.headers.get("user-agent"));
+  return { adsHtml: await ads.renderHtml(new URL(url.pathname, "${site}").href) };
+}`,
+        },
+        { path: 'src/routes/<page>/+page.svelte', content: `<script>\n  export let data;\n</script>\n\n<!-- … page content … -->\n<div data-docenty-sdk="1">{@html data.adsHtml}</div>` },
+      ],
+    },
+    remix: {
+      method: 'ssr',
+      files: [
+        {
+          path: 'app/routes/<page>.tsx',
+          content: `import { json, type LoaderFunctionArgs } from "@remix-run/node";
+import { useLoaderData } from "@remix-run/react";
+import { createAgentAds } from "@docenty/agent-ads";
+
+const ads = createAgentAds(${ssrCfg.replace('process.env.DOCENTY_SITE_KEY', 'process.env.DOCENTY_SITE_KEY!').replace('process.env.DOCENTY_SDK_SECRET', 'process.env.DOCENTY_SDK_SECRET!')});
+
+export async function loader({ request }: LoaderFunctionArgs) {
+  ads.observe(request.headers.get("user-agent"));
+  return json({ adsHtml: await ads.renderHtml(new URL(new URL(request.url).pathname, "${site}").href) });
+}
+
+export default function Page() {
+  const { adsHtml } = useLoaderData<typeof loader>();
+  return (
+    <main>
+      {/* … page content … */}
+      <div data-docenty-sdk="1" dangerouslySetInnerHTML={{ __html: adsHtml }} />
+    </main>
+  );
+}`,
+        },
+      ],
+    },
+    nuxt: {
+      method: 'ssr',
+      files: [
+        {
+          path: 'server/api/agent-ads.get.ts',
+          content: `import { createAgentAds } from "@docenty/agent-ads";
+
+const ads = createAgentAds(${ssrCfg.replace('process.env.DOCENTY_SITE_KEY', 'process.env.DOCENTY_SITE_KEY!').replace('process.env.DOCENTY_SDK_SECRET', 'process.env.DOCENTY_SDK_SECRET!')});
+
+export default defineEventHandler(async (event) => {
+  const path = String(getQuery(event).path || "/");
+  return { html: await ads.renderHtml(new URL(path, "${site}").href) };
+});`,
+        },
+        {
+          path: 'pages/<page>.vue',
+          content: `<script setup lang="ts">
+const route = useRoute();
+// runs during SSR: the block is in the initial HTML (the secret stays in the server route)
+const { data } = await useFetch("/api/agent-ads", { query: { path: route.path } });
+</script>
+
+<template>
+  <main>
+    <!-- … page content … -->
+    <div data-docenty-sdk="1" v-html="data?.html" />
+  </main>
+</template>`,
+        },
+      ],
+    },
+    express: {
+      method: 'ssr',
+      files: [
+        {
+          path: 'server.js',
+          content: `import express from "express";
+import { createAgentAds } from "@docenty/agent-ads";
+
+const ads = createAgentAds(${ssrCfg});
+const app = express();
+
+app.get("/<page>", async (req, res) => {
+  ads.observe(req.get("user-agent"));
+  const adsHtml = await ads.renderHtml(new URL(req.path, "${site}").href);
+  res.send(renderPage().replace('${marker}', adsHtml)); // renderPage(): your HTML with the marker where the block goes
+});`,
+        },
+      ],
+    },
+    vite: {
+      method: 'build-inject',
+      files: [
+        { path: 'index.html (and any other page)', content: `<!-- where the sponsored block goes (optionally data-docenty-slot="name") -->\n${marker}` },
+        { path: 'package.json scripts', content: `"postbuild": "agent-ads inject dist --site-url ${site}"` },
+      ],
+      note: 'pnpm/yarn berry skip post-scripts: use "build": "vite build && agent-ads inject dist --site-url …" instead. DOCENTY_SITE_KEY / DOCENTY_SDK_SECRET must be set in the BUILD env (e.g. Vercel production env). The block is fixed at build time — rebuild (or use an edge method) to refresh. Fail-open: no block → marker stays empty, build still passes.',
+    },
+    static: {
+      method: 'build-inject',
+      files: [
+        { path: '<page>.html', content: `<!-- where the sponsored block goes (optionally data-docenty-slot="name") -->\n${marker}` },
+        { path: 'package.json scripts', content: `"build": "agent-ads inject <outDir> --site-url ${site}"` },
+      ],
+      note: 'Run on the deploy build (not by hand): <outDir> is the folder you publish. Hosted on Cloudflare/Vercel/Netlify without a build step? use --framework cloudflare|vercel-edge|netlify-edge.',
+    },
+    cloudflare: {
+      method: 'edge',
+      files: [
+        {
+          path: 'src/worker.js (Cloudflare Worker in front of the site; secrets: wrangler secret put DOCENTY_SITE_KEY / DOCENTY_SDK_SECRET)',
+          content: `import { injectBlocks } from "@docenty/agent-ads/edge";
+
+export default {
+  async fetch(request, env) {
+    const res = await fetch(request);
+    if (!(res.headers.get("content-type") || "").includes("text/html")) return res;
+    const html = await injectBlocks(await res.text(), { siteKey: env.DOCENTY_SITE_KEY, secret: env.DOCENTY_SDK_SECRET, pageUrl: request.url });
+    return new Response(html, res);
+  },
+};`,
+        },
+        { path: '<page>.html', content: marker },
+      ],
+      note: 'The SDK repo also ships a ready HTMLRewriter template; same HTML for every visitor (never branch on User-Agent).',
+    },
+    'vercel-edge': {
+      method: 'edge',
+      files: [
+        {
+          path: 'middleware.js (Vercel Routing Middleware, non-Next projects)',
+          content: `import { injectBlocks } from "@docenty/agent-ads/edge";
+
+export const config = { matcher: ["/((?!api/|.*\\\\.[a-z0-9]+$).*)"] };
+
+export default async function middleware(request) {
+  if (request.headers.get("x-docenty-inject")) return; // the origin fetch below re-enters middleware
+  const res = await fetch(request.url, { headers: { "x-docenty-inject": "1" } });
+  if (!(res.headers.get("content-type") || "").includes("text/html")) return res;
+  const html = await injectBlocks(await res.text(), { siteKey: process.env.DOCENTY_SITE_KEY, secret: process.env.DOCENTY_SDK_SECRET, pageUrl: request.url });
+  return new Response(html, res);
+}`,
+        },
+        { path: '<page>.html', content: marker },
+      ],
+      note: 'Next.js on Vercel: use --framework next-app instead. Prefer the template shipped in the SDK repo if it differs.',
+    },
+    'netlify-edge': {
+      method: 'edge',
+      files: [
+        {
+          path: 'netlify/edge-functions/agent-ads.js',
+          content: `import { injectBlocks } from "@docenty/agent-ads/edge";
+
+export default async (request, context) => {
+  const res = await context.next();
+  if (!(res.headers.get("content-type") || "").includes("text/html")) return res;
+  const html = await injectBlocks(await res.text(), { siteKey: Netlify.env.get("DOCENTY_SITE_KEY"), secret: Netlify.env.get("DOCENTY_SDK_SECRET"), pageUrl: request.url });
+  return new Response(html, res);
+};
+
+export const config = { path: "/*", excludedPath: ["/*.css", "/*.js", "/*.png", "/*.jpg", "/*.svg", "/*.ico"] };`,
+        },
+        { path: '<page>.html', content: marker },
+      ],
+    },
+  };
+  const s = S[framework];
+  return { framework, method: s.method, install, env, files: s.files, note: s.note || '', rule: `Every visitor (human or bot) gets the same HTML — never branch on User-Agent. The block always starts with "${SPONSOR_LABEL}".` };
+}
+
+function aiBlockSnippet(opts) {
+  need(opts, ['framework']);
+  const fw = String(opts.framework);
+  if (!AI_FRAMEWORKS.includes(fw)) fail(EXIT.USAGE, `--framework must be one of ${AI_FRAMEWORKS.join('|')}`);
+  const siteUrl = typeof opts['site-url'] === 'string' ? opts['site-url'].replace(/\/+$/, '') : '';
+  const s = aiSnippetFor(fw, siteUrl);
+  const methodName = { ssr: 'server render (SSR adapter)', 'build-inject': 'build-time injection (postbuild)', edge: 'edge injection' }[s.method];
+  const files = s.files.map((f) => `── ${f.path}\n${f.content}`).join('\n\n');
+  print(`# ai-block · ${fw} · ${methodName}\n# 1) install (no GitHub auth):\n${s.install}\n# 2) env: ${s.env}\n# 3) code:\n\n${files}\n${s.note ? `\n# note: ${s.note}\n` : ''}# rule: ${s.rule}\n# 4) after deploy: dct-pay ai-block check --url ${siteUrl || '<deployed url>'}`, s);
+}
+
+// ---- check (same report as `agent-ads check`, zero-dep) ----
+const AI_CRAWLER_UA = 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; OAI-SearchBot/1.3; +https://openai.com/searchbot';
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+const decodeEntities = (s) => s.replace(/&(amp|lt|gt|quot|#39|middot|nbsp|#x?[0-9a-f]+);/gi, (m, e) => {
+  const k = e.toLowerCase();
+  if (k === 'amp') return '&';
+  if (k === 'lt') return '<';
+  if (k === 'gt') return '>';
+  if (k === 'quot') return '"';
+  if (k === '#39') return "'";
+  if (k === 'middot') return '·';
+  if (k === 'nbsp') return ' ';
+  const n = k.startsWith('#x') ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
+  return Number.isFinite(n) ? String.fromCodePoint(n) : m;
+});
+const textOf = (html) => decodeEntities(html.replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+const attr = (tag, name) => {
+  const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag);
+  return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null;
+};
+/**
+ * ad4ai blocks in raw HTML. Current markup: <section class="dct-placement" data-docenty-deal> whose first element is
+ * <h3>협찬 · 광고 — {광고주}</h3>; legacy markup (still valid for blocks published before 2026-10-11):
+ * <aside class="docenty-sponsored"> with "협찬 · 광고" as the first <p>.
+ */
+function analyzeAiBlocks(html) {
+  const blocks = [];
+  const roots = [
+    { re: /<section\b[^>]*>[\s\S]*?<\/section>/gi, cls: /\bdct-placement\b/, close: '</section>', first: /<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/i },
+    { re: /<aside\b[^>]*>[\s\S]*?<\/aside>/gi, cls: /\bdocenty-sponsored\b/, close: '</aside>', first: /<p\b[^>]*>([\s\S]*?)<\/p>/i },
+  ];
+  for (const r of roots) {
+    for (const m of html.matchAll(r.re)) {
+      const open = m[0].slice(0, m[0].indexOf('>') + 1);
+      if (!r.cls.test(attr(open, 'class') || '')) continue;
+      const inner = m[0].slice(open.length, -r.close.length);
+      const first = r.first.exec(inner);
+      const label = first ? textOf(first[1]) : '';
+      // the label must lead the block: nothing but whitespace before the first heading/paragraph
+      const leads = !!first && textOf(inner.slice(0, first.index)) === '';
+      const anchors = [...inner.matchAll(/<a\b[^>]*>/gi)].map((a) => a[0]);
+      const channel = anchors.find((a) => /\/c\/[^/?#"']+/.test(attr(a, 'href') || ''));
+      const rel = channel ? (attr(channel, 'rel') || '').toLowerCase().split(/\s+/) : [];
+      const b = { dealId: attr(open, 'data-docenty-deal'), labelFirstLine: leads && (label === SPONSOR_LABEL || label.startsWith(`${SPONSOR_LABEL} — `)), channelLink: channel ? attr(channel, 'href') : null, relSponsored: rel.includes('sponsored'), html: m[0] };
+      b.valid = b.labelFirstLine && !!b.channelLink && b.relSponsored;
+      blocks.push(b);
+    }
+  }
+  return blocks;
+}
+async function fetchPage(url, ua) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { headers: { 'user-agent': ua, accept: 'text/html,application/xhtml+xml' }, redirect: 'follow', signal: ctl.signal });
+    return { status: res.status, html: await res.text() };
+  } catch (e) {
+    return { status: 0, html: '', error: e && e.name === 'AbortError' ? `timeout after ${TIMEOUT_MS / 1000}s` : (e && e.message) || String(e) };
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function aiBlockCheck(opts) {
+  need(opts, ['url']);
+  let u;
+  try {
+    u = new URL(String(opts.url));
+  } catch {
+    u = null;
+  }
+  if (!u || (u.protocol !== 'https:' && u.protocol !== 'http:')) fail(EXIT.USAGE, '--url must be an absolute http(s) URL of the deployed page');
+  const [ai, browser] = await Promise.all([fetchPage(u.toString(), AI_CRAWLER_UA), fetchPage(u.toString(), BROWSER_UA)]);
+  if (ai.error && browser.error) fail(EXIT.API, `could not fetch ${u}: ${ai.error}`, { fix: 'check the URL is deployed and public' });
+  const view = (r) => {
+    const blocks = analyzeAiBlocks(r.html);
+    return { status: r.status, error: r.error || null, blockPresent: blocks.length > 0, valid: blocks.some((b) => b.valid), blocks: blocks.map(({ html, ...b }) => b) };
+  };
+  const aiView = view(ai);
+  const brView = view(browser);
+  const sig = (r) => analyzeAiBlocks(r.html).map((b) => b.html.replace(/\s+/g, ' ')).join('\n');
+  const sameForBoth = sig(ai) === sig(browser);
+  const ok = aiView.valid;
+  const yn = (b) => (b ? 'yes' : 'NO');
+  const line = (name, v) => {
+    const b = v.blocks.find((x) => x.valid) || v.blocks[0];
+    return `  ${name}: ${v.error ? `fetch failed (${v.error})` : `HTTP ${v.status}`} · block in initial HTML: ${yn(v.blockPresent)} · label "${SPONSOR_LABEL}" first: ${yn(!!b && b.labelFirstLine)} · channel link rel=sponsored: ${yn(!!b && !!b.channelLink && b.relSponsored)}`;
+  };
+  const verdict = ok
+    ? 'OK — AI 답변 엔진이 보는 첫 HTML 에 협찬 블록이 있습니다'
+    : aiView.blockPresent
+      ? 'FAIL — 블록은 있지만 표시 규칙(라벨 첫 줄·rel=sponsored 채널 링크)이 맞지 않습니다'
+      : 'FAIL — AI 크롤러가 받는 첫 HTML 에 블록이 없습니다 (JS 로만 넣었거나, 검토 대기(pending_review)·배치 없음일 수 있음: dct-pay ai-block status)';
+  const data = { url: u.toString(), ok, aiCrawler: { userAgent: 'OAI-SearchBot', ...aiView }, browser: { userAgent: 'browser', ...brView }, sameForBoth };
+  if (JSON_MODE) process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  else process.stdout.write(`ai-block check ${u}\n${line('AI crawler (OAI-SearchBot)', aiView)}\n${line('browser                   ', brView)}\n  same block for both: ${yn(sameForBoth)}\n  result: ${verdict}\n`);
+  if (!ok) process.exit(EXIT.CHECK);
+}
+
 // ---------- tips (one short Docenty Pay line, at most once a day, human mode only) ----------
 // Factual product notes with a utm link so Docenty can tell the CLI helped. Never in --json, never on errors,
 // never in --dry-run; written to stderr so piped stdout stays clean. Off: DCT_PAY_NO_TIPS=1.
@@ -821,6 +1369,8 @@ async function main() {
       return cmdReadiness(opts);
     case 'snippet':
       return cmdSnippet(opts);
+    case 'ai-block':
+      return cmdAiBlock(sub, opts);
     case 'dashboard':
       return cmdDashboard();
     case 'whoami':

@@ -70,7 +70,7 @@ Requirements: Node 18+ (global `fetch`). No npm install, no dependencies.
 
 ```
 /dct-pay pay      # "내 앱에 결제 붙여줘"  → asks once: 무엇을 얼마에 팔까요?
-/dct-pay earn     # "수익화 붙여줘" — sponsor slot (build credits)
+/dct-pay earn     # "수익화 붙여줘" — AI 노출 협찬 블록 (ad4ai, server/build/edge HTML) or JS sponsor slot (build credits)
 ```
 
 Account: sign up at [pay.docenty.ai](https://pay.docenty.ai/?utm_source=github&utm_medium=referral&utm_campaign=dct-pay-skill) (email magic link) or let the skill run `register` (202 → mail) and
@@ -90,9 +90,22 @@ node scripts/dct-pay.mjs readiness --app <appId>
 node scripts/dct-pay.mjs dashboard
 ```
 
+AI 노출 협찬 블록 (ad4ai) — the sponsored block lands in your **server / build / edge HTML**, so AI answer engines
+(ChatGPT search, Perplexity, Claude) see it; the JS sponsor slot is invisible to them. Same HTML for every visitor.
+
+```bash
+node scripts/dct-pay.mjs ai-block add --app <appId> --env-path .env.local   # or --vercel; writes DOCENTY_SITE_KEY + DOCENTY_SDK_SECRET (never printed)
+node scripts/dct-pay.mjs ai-block snippet --framework vite --site-url https://photoclean.app   # next-app|next-pages|astro|sveltekit|remix|nuxt|express|vite|static|cloudflare|vercel-edge|netlify-edge
+node scripts/dct-pay.mjs ai-block status --app <appId>                      # 운영자 검토 후 블록이 나옵니다 (pending_review → approved)
+node scripts/dct-pay.mjs ai-block check --url https://photoclean.app/       # AI-crawler vs browser HTML (exit 4 = no valid block)
+```
+
+SDK install (no GitHub auth): `dct-pay ai-block install` (saves `vendor/agent-ads-<version>.tgz` from `https://ad4ai.docenty.ai/l/answers/sdk/` and installs it from the file; commit the tgz with the app) (`AD4AI_HUB_BASE`
+overrides the hub for local runs). The app's media share is settled monthly as build credits (BC, not cash).
+
 `--dry-run` validates `product add` / `template apply` / `invoice send` and prints the request without sending.
 `--json` on any command. `DCT_PAY_API=http://localhost:3000` points the CLI at a local platform.
-Exit codes: `0` ok · `1` usage · `2` network/API error (server message printed) · `3` not registered.
+Exit codes: `0` ok · `1` usage · `2` network/API error (server message printed) · `3` not registered · `4` `ai-block check` found no valid block.
 Tips: the CLI prints at most one short Docenty Pay tip per day in human mode (never with `--json`); turn off with `DCT_PAY_NO_TIPS=1`.
 
 ## What gets inserted
@@ -120,6 +133,10 @@ Only the **public** key is placed in your code. The creator secret stays in `~/.
 **What data leaves my app?** Checkout sends the product id and your `buyerRef`. The sponsor-slot SDK sends
 batched events with a random per-page-load session hash — no cookies — and only while its consent notice is shown.
 
+**What does the AI block send?** `ai-block add` sends the app id, name, deployed URL, contact email and categories
+to pay.docenty.ai, which creates the ad4ai media. The SDK sends the page URL (no query) and aggregate AI-crawler counts
+to the ad4ai hub — no visitor data. The SDK secret stays in your server/build env. Every block is labelled "협찬 · 광고".
+
 **Which repos are supported?** Web apps: Next.js, React, Vite, static HTML. The skill refuses CLIs, bots,
 mobile and backend-only repos and says why.
 
@@ -137,7 +154,7 @@ command before running it and never prints the secret.
 ## Files
 
 - `SKILL.md` — agent instructions (two flows, repo detection, hard rules, when not to use, example)
-- `scripts/dct-pay.mjs` — the CLI (`register | login | app | product | template | invoice | order | init | slot | readiness | policy | snippet | dashboard | whoami`)
+- `scripts/dct-pay.mjs` — the CLI (`register | login | app | product | template | invoice | order | init | slot | ai-block | readiness | policy | snippet | dashboard | whoami`)
 - `scripts/smoke.test.mjs` — `node --test scripts/smoke.test.mjs`
 - `llms.txt` — short machine-readable summary for AI assistants
 - `.claude-plugin/` — Claude Code plugin + marketplace manifests
