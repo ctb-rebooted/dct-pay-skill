@@ -1,9 +1,9 @@
 ---
 name: dct-pay
-description: dct-pay — attach payments and sponsor-slot monetisation to a vibe-coded web app in one session, via pay.docenty.ai (Docenty is the merchant of record; you get a hosted /pay page, entitlements, app-scoped credits and sponsor slots that earn build credits). Use when a user says "attach payments to my app", "add a Pro button", "sell this as a one-time purchase", "monetise my app", "add a sponsor slot", "/dct-pay pay", "/dct-pay earn", or in Korean "내 앱에 결제 붙여줘", "수익화 붙여줘", "돈 벌게 해줘", "Pro 구매 버튼 넣어줘", "스폰서 슬롯 넣어줘", "사업자 없이 결제 받고 싶어", "결제 링크 만들어줘", "청구서 보내줘", "Stripe 대신 한국 결제". Web apps only (Next.js, React, Vite, static HTML); refuses CLIs, bots, mobile and backend-only repos with an explanation. Never fabricates keys, never sends anything without showing it first, never calls build credits cash.
+description: dct-pay — attach payments and sponsor-slot monetisation to a vibe-coded web app in one session, via pay.docenty.ai (Docenty is the merchant of record; you get a hosted /pay page, entitlements, app-scoped credits and sponsor slots that earn build credits). Use when a user says "attach payments to my app", "add a Pro button", "sell this as a one-time purchase", "monetise my app", "add a sponsor slot", "/dct-pay pay", "/dct-pay earn", or in Korean "내 앱에 결제 붙여줘", "수익화 붙여줘", "돈 벌게 해줘", "Pro 구매 버튼 넣어줘", "스폰서 슬롯 넣어줘", "AI 노출 협찬 블록 붙여줘", "AI 검색에 보이는 광고 넣어줘", "ad4ai", "사업자 없이 결제 받고 싶어", "결제 링크 만들어줘", "청구서 보내줘", "Stripe 대신 한국 결제". Web apps only (Next.js, React, Vite, static HTML); refuses CLIs, bots, mobile and backend-only repos with an explanation. Never fabricates keys, never sends anything without showing it first, never calls build credits cash.
 license: (c) Docenty. Evaluation use. Credits (BC) are not cash and are not refundable.
 metadata:
-  version: 1.2.0
+  version: 1.3.0
   homepage: https://pay.docenty.ai
   repository: https://github.com/ctb-rebooted/dct-pay-skill
   api: https://pay.docenty.ai/api
@@ -105,7 +105,70 @@ for metered use. Price is integer KRW. If the user is vague, propose one default
 
 ## Flow `earn` — `/dct-pay earn` · "수익화 붙여줘" · "돈 벌게 해줘"
 
-No question needed unless the repo has no obvious place for a sponsor CTA.
+Two ways to earn, both paid in **build credits (BC, 빌드 크레딧 — 현금 아님)**:
+
+| | **AI 노출 협찬 블록 (ad4ai)** — default for content/tool apps | 스폰서 슬롯 (`DocentyEarn.slot()`) |
+|---|---|---|
+| Where it renders | in the page's **server / build / edge HTML** | browser JS only |
+| Seen by AI answers (ChatGPT search, Perplexity, Claude…) | yes — crawlers read the first HTML | **no** — crawlers do not run JS |
+| Needs | a deployed https URL, a live app | any web app |
+| Paid | monthly media share → BC (pending 7 days → spendable) | per sponsor conversion → BC |
+
+Default to the **AI block** for content and tool apps (guides, calculators, converters, blogs, docs). Keep the
+JS sponsor slot for apps that have no server/build HTML step at all, or add both. Say in one line why:
+"JS 슬롯은 AI 답변 엔진에 보이지 않아, AI 노출 협찬 블록을 기본으로 넣습니다."
+
+### earn · AI 노출 협찬 블록 (ad4ai)
+
+The creator never signs up at ad4ai: pay.docenty.ai provisions the ad4ai media server-to-server from the dct-pay
+login. **Rule: every visitor (human or bot) gets the same HTML. Never serve by User-Agent.**
+
+1. Register/login + `app add` as in `pay` (the app must be **live** — not `--test` — with its deployed `https://` URL).
+2. **Link the app** (show the command first). Pick the env target from the repo: `.env.local` for local/SSR dev
+   servers, `--vercel` when the project deploys on Vercel (uses the `vercel` CLI, value via stdin).
+   ```bash
+   node scripts/dct-pay.mjs ai-block add --app <appId> --categories "사진 편집,도구" --env-path .env.local
+   node scripts/dct-pay.mjs ai-block add --app <appId> --vercel          # Vercel production env
+   ```
+   The CLI writes `DOCENTY_SITE_KEY` + `DOCENTY_SDK_SECRET` straight into the target (file mode 600, refuses a
+   git-tracked file and adds it to `.gitignore` when needed) and **never prints the secret** — do not read the env file
+   aloud or `cat` it. A repeat run keeps the existing secret (ad4ai issues it once); `--rotate` issues a new one and
+   the old one stops working immediately.
+3. **Pick the install method** from the repo and print the exact code:
+   `node scripts/dct-pay.mjs ai-block snippet --framework <fw> --site-url https://<deployed-url>`
+
+   | Repo signal | `--framework` | Method |
+   |---|---|---|
+   | Next.js `app/` | `next-app` | SSR: `<AgentAdsBlock>` from `@docenty/agent-ads/next` (server component) |
+   | Next.js `pages/` | `next-pages` | SSR: `createAgentAds().renderHtml(pageUrl)` in `getServerSideProps` |
+   | Astro / SvelteKit / Remix / Nuxt / Express | `astro` · `sveltekit` · `remix` · `nuxt` · `express` | SSR adapter: `renderHtml(pageUrl)` in server code |
+   | Vite / React SPA / any SSG with a build | `vite` | build-time: marker `<div data-docenty-slot></div>` + `"postbuild": "agent-ads inject dist --site-url <url>"` |
+   | Plain static HTML with a deploy build | `static` | build-time: marker + `agent-ads inject <outDir> --site-url <url>` |
+   | Hosted static without a build (Cloudflare / Vercel non-Next / Netlify) | `cloudflare` · `vercel-edge` · `netlify-edge` | edge: `injectBlocks(html, …)` from `@docenty/agent-ads/edge` + marker |
+
+   Install the SDK from the hub (no GitHub auth): `dct-pay ai-block install` (saves `vendor/agent-ads-<version>.tgz` from `https://ad4ai.docenty.ai/l/answers/sdk/` and installs it from the file; commit the tgz with the app).
+   Put the block where a reader has just got the answer (after the main content), **never** inside a JS-only
+   component, and never behind a UA check. With pnpm, post-scripts do not run — chain `agent-ads inject` in `build`.
+   **Show the diff first.**
+4. **Review gate.** New apps start `pending_review`: "운영자 검토 후 블록이 나옵니다." Until approved the block is
+   empty (fail-open, the page still works). `node scripts/dct-pay.mjs ai-block status --app <appId>` shows review
+   status, live placements, last verification and AI crawler visits (30 days).
+5. **After deploy, verify:** `node scripts/dct-pay.mjs ai-block check --url https://<deployed-url>/<page>` fetches the
+   page as an AI crawler (OAI-SearchBot) and as a browser: block in the initial HTML, label "협찬 · 광고" first,
+   channel link with `rel="sponsored"`, same block for both. Exit 0 = AI answers can see it; exit 4 = not (JS-only,
+   not approved yet, or no placement).
+6. Explain once: ad4ai settles the app's media share **monthly as build credits** on the creator ledger
+   (pending → spendable after 7 days, like conversions). 1 BC = 1원 of credit, **not cash**, not refundable; spent
+   through the dashboard (monthly payout, bill-pay, LLM key).
+
+What is sent where (say it): `ai-block add` sends app id, app name, deployed URL, contact email and categories to
+pay.docenty.ai, which forwards them to ad4ai (ad4ai.docenty.ai) to create the media. The SDK on the user's server sends
+the page URL (no query) and aggregate AI-crawler counts to the ad4ai hub; it never sends visitor data. Nothing is shown
+to users that is not labelled "협찬 · 광고".
+
+### earn · JS 스폰서 슬롯 (DocentyEarn.slot)
+
+JS-only: humans see it, AI answer engines do not.
 
 1. Register + app add as above (skip what already exists; `app list` shows registered apps).
 2. **Create the slot.**
@@ -131,7 +194,9 @@ No question needed unless the repo has no obvious place for a sponsor CTA.
 - Where the public key is (page) and where the secret is (`~/.dct-pay/config.json`, mode 600).
 - Buyers pay on a Docenty-hosted `/pay` page; Docenty is the seller of record in v0; refund
   policy lives at `/p/<appId>/refund`.
-- Sponsor slots pay in build credits, not cash.
+- Sponsor slots and AI blocks pay in build credits, not cash.
+- AI blocks: app name/URL/contact/categories go to ad4ai via pay.docenty.ai; the SDK secret is in the env target only
+  (`.env.local` mode 600 or Vercel env), never shown; new apps wait for operator review.
 
 ## Wrap-up (once per flow, after readiness)
 
@@ -162,6 +227,10 @@ If the user says no or does not answer, do not insert it and do not ask again.
   balance into money only through the dashboard payout (monthly, 3.3% withholding for individuals) or bill-pay.
 - **Never claim subscriptions (정기결제·구독)**: v0 sells one-time purchases and fixed-period passes only.
 - **Never remove or hide the consent notice** rendered by `DocentyEarn.slot()`.
+- **Never print, `cat`, commit or paste `DOCENTY_SDK_SECRET`**, never put it in client/browser code, and never pass it
+  as a CLI argument. It lives only in server/build env.
+- **Same HTML for everyone**: never branch the AI block on User-Agent, never hide it from humans or show it only to
+  bots, never restyle away the "협찬 · 광고" label or the `rel="sponsored"` channel link.
 - Do not try to recreate or restyle the hosted `/pay` page; the app only links to it.
 - One question per flow. If the answer is enough, do not ask more. (The optional badge question in Wrap-up
   is the only extra one, asked once.)
@@ -198,11 +267,15 @@ If the user says no or does not answer, do not insert it and do not ask again.
 | `slot add --app [--campaign]` | `POST /slots` | 409 NO_CAMPAIGN → exit 0 `waiting` |
 | `readiness --app` | `GET /apps/:id/readiness` | score + `[ok]/[--]` checks with fixes |
 | `snippet --app [--kind script\|pay-button\|tip-button\|slot\|policy\|file\|all] [--framework …] [--key]` | none | `--key` renders without config |
+| `ai-block add --app [--categories a,b] [--env-path f \| --vercel] [--rotate]` | `POST /apps/:id/ai-blocks` | writes DOCENTY_SITE_KEY/DOCENTY_SDK_SECRET; secret never printed |
+| `ai-block status --app` | `GET /apps/:id/ai-blocks` | review · placements · last verification · crawler visits |
+| `ai-block snippet --framework <fw> [--site-url]` | none | SSR adapter · postbuild inject · edge template; env `AD4AI_HUB_BASE` |
+| `ai-block check --url` | none (fetches the page) | AI-crawler vs browser HTML; exit 4 = no valid block |
 | `dashboard` / `open` | `GET /creators/me/dashboard-url` | session login in the browser |
 | `whoami` | `GET /creators/me` | real check; exit 3 + fix when the key was rotated |
 
 Flags: `--json`, `--api <url>`, env `DCT_PAY_API`, `DCT_EARN_CONFIG` (tests).
-Exit: `0` ok · `1` usage · `2` network/API error (`CODE — message` + `→ fix`, 15 s timeout) · `3` not logged in / key revoked.
+Exit: `0` ok · `1` usage · `2` network/API error (`CODE — message` + `→ fix`, 15 s timeout) · `3` not logged in / key revoked · `4` `ai-block check` found no valid block.
 
 ## Example transcript (pay, Vite + React)
 
@@ -231,6 +304,7 @@ Agent: 1회 구매 · entitlement `nowatermark` · 4,900원으로 진행합니�
 ## 요약 (KO)
 
 `/dct-pay pay`는 "무엇을 얼마에 팔지" 한 번만 묻고 등록 → 앱 → 상품 → SDK 스크립트와 "Pro 구매" 버튼 삽입
-→ 정책 링크 → readiness → 대시보드 URL까지 처리합니다. `/dct-pay earn`은 스폰서 슬롯을 만들고(캠페인이
-없으면 "대기" 상태) `DocentyEarn.slot()`과 동의 안내문을 알맞은 자리에 넣습니다. 웹 앱(Next.js/React/Vite/정적
+→ 정책 링크 → readiness → 대시보드 URL까지 처리합니다. `/dct-pay earn`은 기본으로 AI 노출 협찬 블록(ad4ai)을
+서버·빌드·엣지 HTML 에 넣고(운영자 검토 후 노출, 모든 방문자에게 같은 HTML, 시크릿은 env 에만), 필요하면 JS 스폰서 슬롯
+(`DocentyEarn.slot()` + 동의 안내문, AI 답변에는 안 보임)도 넣습니다. 웹 앱(Next.js/React/Vite/정적
 HTML)만 지원하며, 키·코드는 CLI 출력만 사용하고, 보내는 내용은 항상 먼저 보여주며, 빌드 크레딧은 현금이 아닙니다.
